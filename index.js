@@ -818,10 +818,10 @@ let cameraOn = false;
 
 async function main() {
 
-  await getImageData('./images/botwColorPixels.png');
+  await getImageData('./Images/botwColorPixels.png');
   colorArray = pixelArray;
   pixelArray = [];
-  await getImageData('./images/botwHeightPixels.png');
+  await getImageData('./Images/botwHeightPixels.png');
   heightArray = pixelArray;
 
   for (let row = 0; row < ROWS; row++) {
