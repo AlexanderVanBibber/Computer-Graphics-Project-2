@@ -468,7 +468,111 @@ function draw() {
 
   }
 
-  if(cameraOn) {
+
+  if (animateCube) {
+   
+    pathDist = (pathDist + SPEED) % path.length;
+
+  }
+
+  for (let k = 0; k < NUM_FOLLOWERS; k++) {
+    const d = pathDist - k * FOLLOW_GAP;
+    const pos = getPositionAtDistance(d);
+    const baseY = bodyY(d);
+
+    let bodyScale = 1;
+    const tailStart = NUM_FOLLOWERS - TAIL_LENGTH;
+
+    if (k >= tailStart) {
+      const f = (k - tailStart + 1) / TAIL_LENGTH;     // 0..1 across the tail, 1 at the last cube
+      bodyScale = 1 - f * (1 - TAIL_MIN);
+    }
+
+    const isHead = (k === 0);
+    const s = isHead ? HEAD_SCALE : SPACING * bodyScale;
+    const y = baseY + SPACING / 2 - s / 2;             // keeps every cube's center level 
+
+    gl.uniformMatrix4fv(uModel, false, multiply(
+      translation(pos.x, y, pos.z),
+      scaling(s, s, s),
+    ));
+    gl.uniform3fv(uColor, isHead ? [1, 0.84, 0] : [1, 1, 1]);
+    gl.drawArrays(gl.TRIANGLES, 0, VERTEX_COUNT);
+
+    if (isHead) {
+      const fwd = getForwardVector(d);
+      const centerY = baseY + SPACING / 2;      // vertical center shared by head and body cubes
+
+      let prevSize = HEAD_SCALE;
+      let dist = 0;                             // distance forward from the head's center
+
+      for (const size of SNOUT_SCALES) {
+        dist += (prevSize + size) / 2 * 0.9;    // 0.9 overlaps slightly so there are no gaps
+        prevSize = size;
+
+        gl.uniformMatrix4fv(uModel, false, multiply(
+          translation(
+            pos.x + fwd.x * dist,
+            centerY - size / 2,                 // keeps each cube centered at the same height
+            pos.z + fwd.z * dist,
+          ),
+          scaling(size, size, size),
+        ));
+        gl.uniform3fv(uColor, SNOUT_COLOR);
+        gl.drawArrays(gl.TRIANGLES, 0, VERTEX_COUNT);
+      }
+    }
+
+    if (!isHead) {
+      const sp = SPIKE_SCALE * bodyScale;
+      gl.uniformMatrix4fv(uModel, false, multiply(
+        translation(pos.x, baseY + SPACING, pos.z),   // base sits on top of the body cube
+        scaling(sp, sp, sp),
+      ));
+      gl.uniform3fv(uColor, SPIKE_COLOR);
+      gl.drawArrays(gl.TRIANGLES, 0, VERTEX_COUNT);
+    }
+
+    if (LEG_INDICES.includes(k)) {
+      const side = getSideVector(d);
+      const offset = SPACING / 2 + LEG_THICK / 2;   // just outside the body cube
+
+      for (const sign of [-1, 1]) {                 // left and right
+        gl.uniformMatrix4fv(uModel, false, multiply(
+          translation(
+            pos.x + side.x * offset * sign,
+            baseY + SPACING - LEG_HEIGHT,          // top of leg flush with top of body
+            pos.z + side.z * offset * sign,
+          ),
+          scaling(LEG_THICK, LEG_HEIGHT, LEG_THICK),
+        ));
+        gl.uniform3fv(uColor, LEG_COLOR);
+        gl.drawArrays(gl.TRIANGLES, 0, VERTEX_COUNT);
+      }
+    }
+  }
+
+   if(drawBeziers) {
+
+
+    drawBezierCurve(p0, p1, p2, p3, 255, 0, 0);
+
+    drawBezierCurve(p3, p4, p5, p6, 0, 0, 255);
+
+    drawBezierCurve(p6, p7, p8, p9, 0, 1, 0);
+
+    drawBezierCurve(p9, p10, p11, p12, 1, 1, 0);
+
+    drawBezierCurve(p12, p13, p14, p15, 0, 1, 1);
+    
+    drawBezierCurve(p15, p16, p17, p0, 1, 0, 1);
+
+
+  }
+
+
+
+  if(cameraOn || animateCube) {
 
     requestAnimationFrame(draw);
 
@@ -500,7 +604,6 @@ function getImageData(source) {
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       pixelArray = imageData.data;
 
-      console.log("Pixel Array Size: ", pixelArray.length);
 
       //newPixelArray = resizeArea(pixelArray, img.naturalWidth, img.naturalHeight, GRID_SIZE, GRID_SIZE);
 
@@ -538,6 +641,142 @@ function getColor(x, y) {
 
 }
 
+function getForwardVector(d) {
+  const a = getPositionAtDistance(d);
+  const b = getPositionAtDistance(d + 0.1);
+  const len = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+  return { x: (b.x - a.x) / len, z: (b.z - a.z) / len };
+}
+
+function getSideVector(d) {
+  const a = getPositionAtDistance(d);
+  const b = getPositionAtDistance(d + 0.1);   // a bit further along the path
+  const tx = b.x - a.x;
+  const tz = b.z - a.z;
+  const len = Math.hypot(tx, tz) || 1;
+  return { x: -tz / len, z: tx / len };       // perpendicular in the x/z plane
+}
+
+const SAMPLES_PER_CURVE = 200;   // more = more accurate
+
+function buildPath(curves) {
+  const pts = [];    // sampled positions
+  const dist = [];   // cumulative distance at each sample
+  let total = 0;
+
+  for (let c = 0; c < curves.length; c++) {
+    const [a, b, cc, d] = curves[c];
+    // skip i = 0 on later curves so the shared join point isn't duplicated
+    for (let i = (c === 0 ? 0 : 1); i <= SAMPLES_PER_CURVE; i++) {
+      const p = defineBezier(a, b, cc, d, i / SAMPLES_PER_CURVE);
+      if (pts.length > 0) {
+        const prev = pts[pts.length - 1];
+        total += Math.hypot(p.x - prev.x, p.z - prev.z);
+      }
+      pts.push({ x: p.x, z: p.z });
+      dist.push(total);
+    }
+  }
+  return { pts, dist, length: total };
+}
+
+function getPositionAtDistance(d) {
+  const L = path.length;
+  d = ((d % L) + L) % L;               // wrap, including negatives
+
+  // binary search for the last sample with dist <= d
+  let lo = 0, hi = path.dist.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (path.dist[mid] <= d) lo = mid; else hi = mid;
+  }
+
+  const segLen = path.dist[hi] - path.dist[lo];
+  const f = segLen > 0 ? (d - path.dist[lo]) / segLen : 0;
+  const p0s = path.pts[lo], p1s = path.pts[hi];
+  return {
+    x: p0s.x + (p1s.x - p0s.x) * f,
+    z: p0s.z + (p1s.z - p0s.z) * f,
+  };
+}
+
+function defineBezier(p0, p1, p2, p3, t) {
+
+  const u = 1 - t;
+
+  const b0 = u * u * u;
+  const b1 = 3 * u * u * t;
+  const b2 = 3 * u * t * t;
+  const b3 = t * t * t;
+
+  return {
+
+    x: b0 * p0.x + b1 * p1.x + b2 * p2.x + b3 * p3.x,
+    y: b0 * p0.y + b1 * p1.y + b2 * p2.y + b3 * p3.x,
+    z: b0 * p0.z + b1 * p1.z + b2 * p2.z + b3 * p3.z
+  }
+}
+
+function drawBezierCurve(p0, p1, p2, p3, r, g, b) {
+
+
+  const points = [];
+  const steps = 50;
+  for (let i = 0; i <= steps; i++) {
+    points.push(defineBezier(p0, p1, p2, p3, i / steps));
+  }
+
+
+  for(i = 0; i < points.length; i++) {
+
+    cubes.push({
+      x: points[i].x,
+      z: points[i].z,
+      scale: SPACING,
+      height: 10,
+      color: [r, g, b]
+  })
+  }
+
+
+}
+
+const p0 = { x: -20,   y: 0, z: 30 };
+const p1 = { x: -20,  y: 0, z: 50 };
+const p2 = { x: -40,  y: 0, z: 40 };
+const p3 = { x: -40, y: 0, z: 15 };
+
+const p4 = { x: -30, y: 0, z: -60 };
+const p5 = { x: -20,  y: 0, z: -60 };
+const p6 = { x: -10,  y: 0, z: -30 };
+
+const p7 = { x: 10,   y: 0, z: -10 };
+const p8 = { x: 20,   y: 0, z: -65 };
+const p9 = { x: 30,   y: 0, z: -35 };
+
+const p10 = { x: 30,   y: 0, z: -25 };
+const p11 = { x: 10,   y: 0, z: -20 };
+const p12 = { x: 30,   y: 0, z: -5 };
+
+const p13 = { x: 35,   y: 0, z: 10 };
+const p14 = { x: 0,   y: 0, z: 15 };
+const p15 = { x: 25,   y: 0, z: 35 };
+
+const p16 = { x: 20,   y: 0, z: 80 };
+const p17 = { x: 0,   y: 0, z: 0 };
+
+const path = buildPath([[p0, p1, p2, p3], [p3, p4, p5, p6], [p6, p7, p8, p9], [p9, p10, p11, p12], [p12, p13, p14, p15], [p15, p16, p17, p0]]);
+
+const Y_MID = 11;                 // center height
+const Y_AMP = 1;                  // swing: 11 ± 1 gives 10 to 12
+const WAVES = 30;                  // number of full waves along the whole path
+const WAVE_FREQ = (2 * Math.PI * WAVES) / path.length;
+
+function bodyY(d) {
+  return Y_MID + Y_AMP * Math.sin(d * WAVE_FREQ);
+}
+
+const NUM_FOLLOWERS = 20;
 
 const ROWS = 264;
 const COLS = 198;
@@ -545,24 +784,45 @@ const SPACING = 0.5;    // distance between cube centers
 const Y_SCALE = 50.0;
 const cubes = [];
 
-const cameraY = 75 * SPACING;
-const radius = 200 * SPACING;//Math.hypot(14, 18);
-let angle = 0;
+let t = 0;
+const T_SPEED = 0.003;        // fraction of the curve per frame
+const CUBE_COLOR = [1, 1, 1];
+let animateCube = true;
+const SPEED = 0.15;
+const FOLLOW_GAP = SPACING * 1.2;
+let pathDist = 0;
 
-let cameraOn = true;
+
+const HEAD_SCALE = SPACING * 1.6;
+const LEG_INDICES = [4, 8];        // which body cubes get legs
+const LEG_HEIGHT = SPACING * 1.5;
+const LEG_THICK = SPACING * 0.7;
+const LEG_COLOR = [0.33, 0.33, 0.33];
+
+const SNOUT_SCALES = [HEAD_SCALE * 0.7, HEAD_SCALE * 0.4];   // medium, then small
+const SNOUT_COLOR = [1, 1, 1];
+
+const SPIKE_SCALE = SPACING * 0.6;
+const SPIKE_COLOR = [0.725, 0.949, 1.0];   // the golden yellow
+
+const TAIL_LENGTH = 4;       // how many cubes at the end taper
+const TAIL_MIN = 0.5;       // size of the very last cube, as a fraction of normal
+
+
+const cameraY = 200 * SPACING;
+let radius = 200 * SPACING;
+let angle = 1.5708;
+
+
+let cameraOn = false;
 
 async function main() {
 
-  //await getImageData('./images/botwColorMapPixelsTest.png');     // relative to the site root
-  //heightArray = pixelArray;
   await getImageData('./images/botwColorPixels.png');
   colorArray = pixelArray;
   pixelArray = [];
   await getImageData('./images/botwHeightPixels.png');
   heightArray = pixelArray;
-  //console.log("Image Height: ", imageHeight);
-  //console.log("Height Array Length: ", heightArray.length);
-  console.log("Color Array Length: ", colorArray.length);
 
   for (let row = 0; row < ROWS; row++) {
     for (let col = 0; col < COLS; col++) {
@@ -571,14 +831,14 @@ async function main() {
         z: (row - (ROWS - 1) / 2) * SPACING,
         scale: SPACING,
         //height: 1,
+        //color: [128, 128, 128],
         height: Math.pow(getHeight(row, col), 1.5) * 15 * SPACING,
         color: getColor(row, col)
       });
     }
   }
-
+  
   draw();
-
 
 }
 
@@ -589,4 +849,24 @@ main();
 // (To animate, you would instead call draw() every frame with  
 // requestAnimationFrame and change something - like the camera -
 // a little each time.)
-window.addEventListener('resize', draw());
+window.addEventListener('resize', main());
+
+let drawBeziers = false;
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowLeft')  angle -= 0.05;
+  if (event.key === 'ArrowRight') angle += 0.05;
+  if(event.key === 'ArrowUp') radius -= 1;
+  if(event.key === 'ArrowDown') radius += 1;
+  if(drawBeziers) {
+
+    if(event.key === 'Enter') drawBeziers = false;
+    console.log(drawBeziers);
+  }
+
+  else {
+
+    if(event.key === 'Enter') drawBeziers = true;
+
+  }
+});
